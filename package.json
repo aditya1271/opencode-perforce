@@ -1,0 +1,48 @@
+{
+  "name": "opencode-perforce",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin: Perforce commands (annotate, filelog, describe, changes, diff, edit, revert, ...) as typed tools with compact output",
+  "type": "module",
+  "license": "MIT",
+  "author": "Aditya Aggarwal",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aditya1271/opencode-perforce.git"
+  },
+  "homepage": "https://github.com/aditya1271/opencode-perforce#readme",
+  "bugs": {
+    "url": "https://github.com/aditya1271/opencode-perforce/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "plugin",
+    "perforce",
+    "p4",
+    "helix"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "peerDependencies": {
+    "@opencode/plugin": ">=2.2.0 <3"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.2.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
