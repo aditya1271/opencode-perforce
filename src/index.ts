@@ -1,12 +1,14 @@
 import { Plugin } from "@opencode/plugin"
 import { execFile } from "node:child_process"
-import { stat } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import path from "node:path"
 
 const P4 = process.env.OPENCODE_P4_BIN || "p4"
 const TIMEOUT_MS = 120_000
 const MAX_CHARS = 40_000
 const MAX_DESCRIBED_CHANGES = 25
+const DIFF_ACTIONS = new Set(["edit", "integrate", "move/add"])
+const NEW_ACTIONS = new Set(["add", "branch", "import"])
 
 type Rec = Record<string, string | number>
 
@@ -584,6 +586,123 @@ export default Plugin.define({
             ...files,
           ].join("\n")
           return finish(result, truncate(body, maxChars, "raise maxChars"))
+        },
+      })
+
+      editor.add({
+        name: "p4_change_diff",
+        description:
+          'Every change in a changelist, as unified diffs. Use it to see what you have changed so far (for example after losing context). "default" or a pending changelist of this workspace: diffs of the opened files against the have revision, full content of added files, and a list of deleted files. A pending changelist of another workspace (or shelved=true): the shelved diffs. A submitted changelist: its diffs.',
+        input: {
+          type: "object",
+          properties: {
+            change: { type: "string", description: 'Changelist number, or "default" for the default changelist.' },
+            shelved: { type: "boolean", default: false, description: "Show the shelved files of a pending changelist instead of the local workspace files." },
+            context: { type: "integer", minimum: 0, maximum: 50, default: 3, description: "Diff context lines." },
+            ignoreWhitespace: { type: "boolean", default: false },
+            maxNewFileLines: { type: "integer", minimum: 0, maximum: 5000, default: 300, description: "Lines shown per added file." },
+            maxChars: { type: "integer", minimum: 1000, maximum: 400000, default: 60000 },
+            ...cwdProperty,
+          },
+          required: ["change"],
+          additionalProperties: false,
+        },
+        options: { codemode: false },
+        execute: async (input, context) => {
+          const {
+            change,
+            shelved,
+            context: lines = 3,
+            ignoreWhitespace,
+            maxNewFileLines = 300,
+            maxChars = 60000,
+            cwd,
+          } = input as {
+            change: string
+            shelved?: boolean
+            context?: number
+            ignoreWhitespace?: boolean
+            maxNewFileLines?: number
+            maxChars?: number
+            cwd?: string
+          }
+          const id = String(change).trim().toLowerCase()
+          if (id !== "default" && !/^\d+$/.test(id)) throw new Error(`Invalid changelist "${change}": expected a number or "default".`)
+          const diffFlags = [`-du${lines}`, ...(ignoreWhitespace ? ["-dw"] : [])]
+          const tooLong = "pass a smaller context, or use p4_diff / p4_describe on specific files"
+
+          const describeDiff = async (flags: string[], note?: string) => {
+            const result = await p4(context, ["describe", ...diffFlags, ...flags, id], { cwd, json: false })
+            return finish(result, truncate(note ? `${note}\n\n${result.text}` : result.text, maxChars, tooLong))
+          }
+
+          let title = "change default (pending)"
+          if (id !== "default") {
+            const described = await p4(context, ["describe", "-s", "-m", "1", id], { cwd })
+            const rec = described.records[0]
+            if (!rec) return finish(described, "")
+            title = `change ${rec.change} by ${rec.user}@${rec.client} — ${rec.status}\n${indent(rec.desc)}`
+            if (rec.status !== "pending") return describeDiff([])
+            if (shelved) return describeDiff(["-S"], "(shelved files)")
+            const info = await p4(context, ["info"], { cwd })
+            const client = info.records[0]?.clientName
+            if (rec.client !== client) {
+              if (rec.shelved !== undefined) return describeDiff(["-S"], `(shelved files; the changelist belongs to workspace ${rec.client})`)
+              throw new Error(
+                `Changelist ${id} belongs to workspace ${rec.client}, not ${client}, and has no shelved files. Pass cwd inside that workspace.`,
+              )
+            }
+            if (rec.shelved !== undefined) title += "\n(also has shelved files; use shelved=true to see them)"
+          } else if (shelved) {
+            throw new Error("The default changelist cannot have shelved files.")
+          }
+
+          const opened = await p4(context, ["fstat", "-Ro", "-e", id, "-T", "depotFile,clientFile,action,type"], {
+            cwd,
+            files: ["//..."],
+          })
+          const files = opened.records.filter((rec) => rec.depotFile !== undefined)
+          if (!files.length) {
+            const err = opened.errors.join("\n")
+            if (err) throw new Error(err)
+            return { content: `${title}\n\nNo files opened in this changelist.` }
+          }
+
+          const summary = files.map((rec) => `  ${rec.action} ${rec.depotFile} (${rec.type})`).join("\n")
+          const parts = [`${title}\n\nfiles (${files.length}):\n${summary}`]
+          const messages: P4Result = { records: [], text: "", info: [], warnings: [...opened.warnings], errors: [] }
+
+          const diffed = files.filter((rec) => DIFF_ACTIONS.has(String(rec.action))).map((rec) => String(rec.depotFile))
+          if (diffed.length) {
+            const diff = await p4(context, ["diff", ...diffFlags], { cwd, files: diffed, json: false })
+            messages.warnings.push(...diff.warnings)
+            messages.errors.push(...diff.errors)
+            parts.push(diff.text.trim() ? diff.text.trimEnd() : "(opened files have no content changes)")
+          }
+
+          for (const rec of files.filter((rec) => NEW_ACTIONS.has(String(rec.action)))) {
+            const header = `==== ${rec.depotFile} (${rec.action}, new file) ====`
+            if (/binary|apple|resource/.test(String(rec.type))) {
+              parts.push(`${header}\n(binary file not shown)`)
+              continue
+            }
+            let text: string
+            try {
+              text = await readFile(String(rec.clientFile), "utf8")
+            } catch {
+              parts.push(`${header}\n(local file not readable: ${rec.clientFile})`)
+              continue
+            }
+            const all = text.replace(/\n$/, "").split("\n")
+            const shown = all.slice(0, maxNewFileLines).map((line) => `+${line}`)
+            if (all.length > maxNewFileLines) shown.push(`… ${all.length - maxNewFileLines} more lines; read ${rec.clientFile} for the rest.`)
+            parts.push(`${header}\n${shown.join("\n")}`)
+          }
+
+          const removed = files.filter((rec) => String(rec.action).includes("delete"))
+          if (removed.length) parts.push(`deleted:\n${removed.map((rec) => `  ${rec.depotFile}`).join("\n")}`)
+
+          return finish(messages, truncate(parts.join("\n\n"), maxChars, tooLong))
         },
       })
 

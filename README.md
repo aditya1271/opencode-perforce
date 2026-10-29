@@ -28,10 +28,20 @@ pages through huge `annotate` or `describe` output, and retries when something f
 | `p4_annotate` | `p4 annotate -c -u [-i\|-I]` with a line range, plus one-line descriptions of the changelists | none |
 | `p4_filelog` | `p4 filelog -l -m N [-i]` with integration records | none |
 | `p4_describe` | `p4 describe -s` / `-du [-S]` | none |
+| `p4_change_diff` | Every change in a changelist as unified diffs (see below) | none |
 | `p4_changes` | `p4 changes -m N [-s] [-u] [-c] [path]` | none |
 | `p4_edit` | `p4 edit [-c]` | asks |
 | `p4_add` | `p4 add [-c] [-t]` | asks |
 | `p4_revert` | `p4 revert [-a] [-k] [-c]` | asks |
+
+`p4_change_diff({ change })` shows everything a changelist changes, so the agent can recover what it edited after
+losing context:
+
+| Changelist | Result |
+|---|---|
+| `default`, or pending in this workspace | file list, `p4 diff -du` of opened files, full content of added files, deleted files |
+| pending in another workspace, or `shelved: true` | `p4 describe -du -S` (shelved diffs) |
+| submitted | `p4 describe -du` |
 
 Example `p4_annotate` result:
 
