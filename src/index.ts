@@ -195,19 +195,25 @@ export default Plugin.define({
       return base
     }
 
-    /** Runs p4 with `files` appended; local paths are made absolute since p4 may run in another directory. */
-    const p4 = async (context: ToolCtx, args: string[], options: { cwd: unknown; files?: string[]; json?: boolean }) => {
+    const absolute = async (context: ToolCtx, files: string[]) => {
       const base = await sessionDirectory(context.sessionID)
-      const files = (options.files ?? []).map((file) => {
+      return files.map((file) => {
         if (isDepotPath(file)) return file
         const revision = file.slice(stripRevision(file).length)
         return path.resolve(base, stripRevision(file)) + revision
       })
+    }
+
+    /** Runs p4 with `files` appended; local paths are made absolute since p4 may run in another directory. */
+    const p4 = async (context: ToolCtx, args: string[], options: { cwd: unknown; files?: string[]; json?: boolean }) => {
+      const files = await absolute(context, options.files ?? [])
       const cwd = await resolveCwd(context, options.cwd, files)
       return run([...args, ...files], cwd, context.signal, options.json ?? true)
     }
 
-    const askWrite = async (context: ToolCtx, tool: string, files: string[]) => {
+    /** Permission resources are absolute paths (or depot paths), so path rules like "*\/workspace/*" match. */
+    const askWrite = async (context: ToolCtx, tool: string, relative: string[]) => {
+      const files = await absolute(context, relative)
       await ctx.permission.assert({
         sessionID: context.sessionID as never,
         agent: context.agent as never,
@@ -767,7 +773,7 @@ export default Plugin.define({
           await askWrite(context, "p4_edit", list)
           const args = ["edit", ...(change ? ["-c", String(change)] : [])]
           const result = await p4(context, args, { cwd, files: list })
-          return finish(result, fileRecordLines(result.records), "No files opened.")
+          return finish(result, fileRecordLines(result.records), "No files newly opened.")
         },
       })
 
@@ -793,7 +799,7 @@ export default Plugin.define({
           await askWrite(context, "p4_add", list)
           const args = ["add", ...(change ? ["-c", String(change)] : []), ...(type ? ["-t", type] : [])]
           const result = await p4(context, args, { cwd, files: list })
-          return finish(result, fileRecordLines(result.records), "No files opened.")
+          return finish(result, fileRecordLines(result.records), "No files newly opened.")
         },
       })
 
